@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 use anyhow::{anyhow, bail, ensure, Context as _};
 use bytes::{Buf as _, Bytes};
 
-const STCM2_MAGIC: &[u8] = b"STCM2";
-const STCM2_TAG_LENGTH: usize = 32 - STCM2_MAGIC.len();
-const GLOBAL_DATA_MAGIC: &[u8] = b"GLOBAL_DATA\0\0\0\0\0";
-const GLOBAL_DATA_OFFSET: usize = STCM2_MAGIC.len() + STCM2_TAG_LENGTH + 12*4 + GLOBAL_DATA_MAGIC.len();
-const CODE_START_MAGIC: &[u8] = b"CODE_START_\0";
-const EXPORT_DATA_MAGIC: &[u8] = b"EXPORT_DATA\0";
-const _COLLECTION_LINK_MAGIC: &[u8] = b"COLLECTION_LINK\0";
+pub const STCM2_MAGIC: &[u8] = b"STCM2";
+pub const STCM2_TAG_LENGTH: usize = 32 - STCM2_MAGIC.len();
+pub const GLOBAL_DATA_MAGIC: &[u8] = b"GLOBAL_DATA\0\0\0\0\0";
+pub const GLOBAL_DATA_OFFSET: usize = STCM2_MAGIC.len() + STCM2_TAG_LENGTH + 12*4 + GLOBAL_DATA_MAGIC.len();
+pub const CODE_START_MAGIC: &[u8] = b"CODE_START_\0";
+pub const EXPORT_DATA_MAGIC: &[u8] = b"EXPORT_DATA\0";
+pub const COLLECTION_LINK_MAGIC: &[u8] = b"COLLECTION_LINK\0";
 
 #[derive(Clone, Copy, Debug)]
 pub enum Parameter {

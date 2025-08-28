@@ -1,6 +1,6 @@
-use std::{borrow::Cow, cmp::Ordering, collections::{btree_map, BTreeMap}, fmt::Write as _, fs::File, io::{self, Write as _}, path::PathBuf, str, sync::LazyLock};
+use std::{borrow::Cow, cmp::Ordering, collections::{btree_map, BTreeMap}, fmt::Write as _, fs, path::PathBuf, str, sync::LazyLock};
 use anyhow::{bail, ensure, Context as _};
-use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
+use bytes::{Buf as _, Bytes};
 use clap::{Parser, ValueEnum};
 use base64::{display::Base64Display, prelude::*};
 use encoding_rs::DecoderResult;
@@ -60,9 +60,9 @@ fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(Bytes, Bytes, boo
     Ok((str, tail, canonical))
 }
 
-fn autolabel(addr: u32) -> anyhow::Result<Bytes> {
+fn autolabel(addr: u32) -> Bytes {
     let label = format!("local_{addr:X}");
-    Ok(Bytes::from(label.into_bytes()))
+    label.into_bytes().into()
 }
 
 fn decode_with_hex_replacement<'a>(encoding: &'static encoding_rs::Encoding, mut buf: &'a [u8]) -> Cow<'a, str> {
@@ -109,18 +109,13 @@ fn label_to_string(label: &[u8]) -> Cow<'_, str> {
     cow_bytes_to_str(ILLEGAL.replace_all(label, |c: &Captures<'_>| {
         let substr = c.get(0).unwrap().as_bytes();
         assert_eq!(substr.len(), 1);
-        let mut buf = [0; 4];
-        write!(&mut buf[..], r"\x{:02x}", substr[0]).unwrap();
-        buf
+        // evil miniscule heap allocation LOL
+        format!("\\x{:02x}", substr[0])
     })).unwrap()
 }
 
 pub fn main(args: Args) -> anyhow::Result<()> {
-    let file = {
-        let mut b = BytesMut::new().writer();
-        io::copy(&mut File::open(args.file)?, &mut b)?;
-        b.into_inner().freeze()
-    };
+    let file = fs::read(args.file)?.into();
 
     let mut stcm2 = from_bytes(file)?;
 
@@ -131,14 +126,14 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             && stcm2.actions.get(&opcode).context("bruh0")?.export.is_none()
             && let btree_map::Entry::Vacant(entry) = labels.entry(opcode)
         {
-            entry.insert(autolabel(opcode)?);
+            entry.insert(autolabel(opcode));
         }
-        for &param in act.params.iter() {
+        for &param in &act.params {
             if let Parameter::GlobalPointer(addr) = param
                 && stcm2.actions.get(&addr).context("bruh9")?.export.is_none()
                 && let btree_map::Entry::Vacant(entry) = labels.entry(addr)
             {
-                entry.insert(autolabel(addr)?);
+                entry.insert(autolabel(addr));
             }
         }
     }
@@ -159,10 +154,10 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     }
 
     let tag = str::from_utf8(&stcm2.tag).context("nooooo")?.trim_end_matches('\0');
-    println!(".tag \"{}\"", tag);
+    println!(".tag \"{tag}\"");
     println!(".global_data {}", Base64Display::new(&stcm2.global_data, &BASE64_STANDARD_NO_PAD));
     println!(".code_start");
-    for (&addr, act) in stcm2.actions.iter() {
+    for (&addr, act) in &stcm2.actions {
         if args.address {
             print!("{addr:06X} ");
         }
@@ -177,12 +172,12 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         if call {
             print!("call {}", label_to_string(stcm2.actions.get(&opcode).context("bruh")?.label().context("bruh2")?));
         } else if opcode == 0 && params.is_empty() && data.is_empty() {
-            print!("return")
+            print!("return");
         } else {
             print!("raw {opcode:X}");
         }
 
-        for &param in params.iter() {
+        for &param in params {
             match param {
                 Parameter::Value(v) => print!(", {v:X}"),
                 Parameter::GlobalPointer(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label().context("bruh6")?)),
@@ -196,7 +191,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         let mut sep = " !";
 
         while pos < data.len() {
-            if let Ok((s, tail, canonical)) = decode_string(pos as u32, data.clone()) {
+            if let Ok((s, tail, canonical)) = decode_string(pos.try_into()?, data.clone()) {
                 let s = decode_with_hex_replacement(args.encoding.get(), &s);
                 if pos != 0 {
                     print!("{sep} {}", Base64Display::new(&data[..pos], &BASE64_STANDARD_NO_PAD));
