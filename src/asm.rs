@@ -1,6 +1,7 @@
-use std::{borrow::Cow, fs::{self, File}, io::{self, BufRead, BufReader}, mem, path::PathBuf, sync::LazyLock};
+use std::{borrow::Cow, fs::{self, File}, io::{self, BufRead, BufReader}, mem, path::PathBuf, ptr, sync::LazyLock};
 
 use anyhow::{bail, ensure, Context};
+use bstr::BStr;
 use bytes::{BufMut, Bytes};
 use clap::Parser;
 use indexmap::IndexMap;
@@ -11,6 +12,8 @@ use crate::stcm2::{Action, Parameter, CODE_START_MAGIC, EXPORT_DATA_MAGIC, GLOBA
 
 #[derive(Parser)]
 pub struct Args {
+    #[arg(from_global)]
+    encoding: super::Encoding,
     input: PathBuf,
     output: PathBuf
 }
@@ -31,28 +34,41 @@ fn decode_label(label: &str) -> Cow<'_, [u8]> {
     })
 }
 
-fn cow_str_to_bytes(s: Cow<'_, str>) -> Cow<'_, [u8]> {
+fn cow_str_to_bytes<'a>(encoding: &'static encoding_rs::Encoding, s: Cow<'a, str>) -> Cow<'a, [u8]> {
     match s {
-        Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
-        Cow::Owned(s) => Cow::Owned(s.into_bytes())
+        Cow::Borrowed(s) => {
+            let (s, _, replaced) = encoding.encode(&s);
+            if replaced { println!("warning: encountered unmappable character"); }
+            s
+        },
+        Cow::Owned(s) => {
+            let (enc, _, replaced) = encoding.encode(&s);
+            if replaced { println!("warning: encountered unmappable character"); }
+            match enc {
+                Cow::Borrowed(enc) if ptr::eq(enc, s.as_bytes()) => Cow::Owned(s.into_bytes()),
+                _ => Cow::Owned(enc.into_owned())
+            }
+        }
     }
 }
 
-fn encode_string(inner: &str, canonical: bool, buffer: &mut Vec<u8>) -> anyhow::Result<()> {
-    fn encode_wellformed(wf: &str) -> Cow<'_, str> {
+fn encode_string(encoding: &'static encoding_rs::Encoding, inner: &str, canonical: bool, buffer: &mut Vec<u8>) -> anyhow::Result<()> {
+    fn unsub_wellformed(wf: &str) -> Cow<'_, str> {
         // note: this is a str regex
         static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\\(?:x([0-9a-f]{2})|(["\\]))"#).unwrap());
         PLACEHOLDER.replace_all(wf, |capt: &Captures<'_>| {
-            if let Some(g) = capt.get(1) {
-                // evil miniscule heap allocation LOL
-                Cow::Owned(char::from(u8::from_str_radix(
-                    g.as_str(),
-                    16
-                ).unwrap()).to_string())
-            } else if let Some(g) = capt.get(2) {
-                Cow::Borrowed(&wf[g.range()])
-            } else {
-                unreachable!()
+            match (capt.get(1), capt.get(2)) {
+                (Some(g), None) => {
+                    // evil miniscule heap allocation LOL
+                    Cow::Owned(char::from(u8::from_str_radix(
+                        g.as_str(),
+                        16
+                    ).unwrap()).to_string())
+                },
+                (None, Some(g)) => {
+                    Cow::Borrowed(&wf[g.range()])
+                },
+                _ => unreachable!()
             }
         })
     }
@@ -64,13 +80,13 @@ fn encode_string(inner: &str, canonical: bool, buffer: &mut Vec<u8>) -> anyhow::
     while idx < inner.len() {
         match MALFORMED.captures_at(inner, idx) {
             None => {
-                pieces.push(cow_str_to_bytes(encode_wellformed(&inner[idx..])));
+                pieces.push(cow_str_to_bytes(encoding, unsub_wellformed(&inner[idx..])));
                 break;
             },
             Some(malformed) => {
                 let whole = malformed.get(0).unwrap();
                 if idx != whole.start() {
-                    pieces.push(cow_str_to_bytes(encode_wellformed(&inner[idx..whole.start()])));
+                    pieces.push(cow_str_to_bytes(encoding, unsub_wellformed(&inner[idx..whole.start()])));
                 }
                 pieces.push(Cow::Owned(vec![u8::from_str_radix(malformed.get(1).unwrap().as_str(), 16).unwrap()]));
                 idx = whole.end();
@@ -150,16 +166,16 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             pending_references.insert(lbl, Some(count));
         }
 
-        if instr == "return" {
-            actions.push(Action {
-                export: label.map(|s| Bytes::from(s.into_owned())),
-                call: false,
-                opcode: 0,
-                params: Vec::new(),
-                data: Bytes::new()
-            });
-            continue;
-        }
+        // if instr == "return" {
+        //     actions.push(Action {
+        //         export: label.map(|s| Bytes::from(s.into_owned())),
+        //         call: false,
+        //         opcode: 0,
+        //         params: Vec::new(),
+        //         data: Bytes::new()
+        //     });
+        //     continue;
+        // }
 
         let mut split = instr.split(" ! ").fuse();
         let text = split.next().context("huh")?;
@@ -172,6 +188,8 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         let (call, opcode) = if let Some(op) = op.strip_prefix("raw ") {
             let opcode = u32::from_str_radix(op, 16)?;
             (false, opcode)
+        } else if op == "return" {
+            (false, 0)
         } else if let Some(op) = op.strip_prefix("call ") {
             let op = decode_label(op);
             let ent = pending_references.entry(op);
@@ -208,8 +226,8 @@ pub fn main(args: Args) -> anyhow::Result<()> {
                 };
                 incoming = incoming
                     .strip_prefix('"').context("no starting quote")?
-                    .strip_suffix('"').context("no ending quote")?;
-                encode_string(incoming, canonical, &mut buffer)?;
+                    .strip_suffix('"').context(format!("no ending quote for {instr}"))?;
+                encode_string(args.encoding.get(), incoming, canonical, &mut buffer)?;
             } else {
                 BASE64_STANDARD_NO_PAD.decode_vec(incoming, &mut buffer)?;
             }
@@ -234,7 +252,8 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         for param in &mut action.params {
             if let Parameter::GlobalPointer(ptr) = param {
                 let idx = usize::try_from(!*ptr)?;
-                *ptr = pending_references.get_index(idx).context("wow this shouldn't happen2")?.1.context("never encountered this label2")?;
+                let (name, addr) = pending_references.get_index(idx).context("wow this shouldn't happen2")?;
+                *ptr = addr.context(format!("never encountered this label {}", BStr::new(name)))?;
             }
         }
     }

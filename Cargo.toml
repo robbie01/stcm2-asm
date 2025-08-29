@@ -11,6 +11,7 @@ bytes = "1.6"
 anyhow = "1"
 regex = "1.11"
 indexmap = "2.11"
+bstr = "1.12"
 
 [profile.release]
 overflow-checks = true

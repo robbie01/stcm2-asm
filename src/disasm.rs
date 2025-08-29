@@ -1,36 +1,19 @@
 use std::{borrow::Cow, cmp::Ordering, collections::{btree_map, BTreeMap}, fmt::Write as _, fs, path::PathBuf, str, sync::LazyLock};
 use anyhow::{bail, ensure, Context as _};
 use bytes::{Buf as _, Bytes};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use base64::{display::Base64Display, prelude::*};
 use encoding_rs::DecoderResult;
 use regex::bytes::{Captures, Regex};
 
 use crate::stcm2::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Encoding {
-    #[value(name = "utf-8")]
-    Utf8,
-    #[value(name = "sjis")]
-    ShiftJis
-}
-
-impl Encoding {
-    fn get(self) -> &'static encoding_rs::Encoding {
-        match self {
-            Encoding::Utf8 => encoding_rs::UTF_8,
-            Encoding::ShiftJis => encoding_rs::SHIFT_JIS
-        }
-    }
-}
-
 #[derive(Parser)]
 pub struct Args {
     #[arg(short = 'a', help = "print addresses in disassembly")]
     address: bool,
-    #[arg(short = 'e', help = "text encoding", value_enum, default_value_t = Encoding::Utf8)]
-    encoding: Encoding,
+    #[arg(from_global)]
+    encoding: super::Encoding,
     file: PathBuf
 }
 
@@ -171,7 +154,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         
         if call {
             print!("call {}", label_to_string(stcm2.actions.get(&opcode).context("bruh")?.label().context("bruh2")?));
-        } else if opcode == 0 && params.is_empty() && data.is_empty() {
+        } else if opcode == 0 && params.is_empty() {
             print!("return");
         } else {
             print!("raw {opcode:X}");
