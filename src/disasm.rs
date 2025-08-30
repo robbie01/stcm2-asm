@@ -33,27 +33,9 @@ fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(Bytes, Bytes, boo
 
     let tail = str.split_off(len);
 
-    // ugly!! hack to output u32s
-    // this could have an unintended side effect of converting an
-    // intended string into a hex literal if it's 3 bytes or less.
-    // this would happen if the string was a single CJK character
-
-    static HEURISTIC: LazyLock<HashSet<[u8; 4]>> = LazyLock::new(|| HashSet::from([
-        *b"end\0",
-        *b"\xE3\x81\x82\0",
-        *b"\xE3\x81\x84\0",
-        *b"\xE3\x81\x86\0",
-        *b"\xE3\x81\x88\0",
-        *b"\xEF\xBC\xAD\0",
-        *b"M_a\0",
-        *b"\xE7\x8C\xBF\0",
-        *b"\xE8\x8A\xB1\0",
-        *b"\xE7\x8E\x8B\0",
-        *b"\xE3\x81\x8A\0"
-    ]));
-
-    // I need a heuristic to detect whether it's an int or a short string...
-    if str.len() == 4 && !HEURISTIC.contains(&str[..]) {
+    // hack to output u32s (i should really change the API here)
+    // do you like my heuristic? :) it seems like the game only uses ints that aren't 6-digit hex
+    if str[..].try_into().is_ok_and(|u| !matches!(u32::from_le_bytes(u), 0x100000..0x1000000)) {
         return Ok((str, tail, false))
     }
 
