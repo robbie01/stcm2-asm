@@ -162,7 +162,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         }).map(decode_label);
 
         if let Some(lbl) = label.clone() {
-            if lbl.starts_with(b"local_") {
+            if lbl.starts_with(b"local_") || lbl.starts_with(b"fn_") {
                 label = None;
             }
             pending_references.insert(lbl, Some(count));
@@ -206,13 +206,13 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         let params = split.map(|param| Ok(if let Some(param) = param.strip_prefix('[') {
             let param = param.strip_suffix(']').context("no matching bracket??")?;
             if let Some(ptr) = param.strip_prefix("data+") {
-                Parameter::LocalPointer(ptr.parse()?)
+                Parameter::DataPointer(ptr.parse()?)
             } else {
                 let ent = pending_references.entry(decode_label(param));
                 let idx = ent.index();
                 ent.or_default();
                 let ptr = !u32::try_from(idx)?;
-                Parameter::GlobalPointer(ptr)
+                Parameter::ActionRef(ptr)
             }
         } else {
             Parameter::Value(u32::from_str_radix(param, 16)?)
@@ -252,7 +252,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             action.opcode = pending_references.get_index(idx).context("wow this shouldn't happen1")?.1.context("never encountered this label1")?;
         }
         for param in &mut action.params {
-            if let Parameter::GlobalPointer(ptr) = param {
+            if let Parameter::ActionRef(ptr) = param {
                 let idx = usize::try_from(!*ptr)?;
                 let (name, addr) = pending_references.get_index(idx).context("wow this shouldn't happen2")?;
                 *ptr = addr.context(format!("never encountered this label {}", BStr::new(name)))?;
@@ -275,7 +275,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             act.opcode = renames[usize::try_from(act.opcode)?];
         }
         for param in &mut act.params {
-            if let Parameter::GlobalPointer(ptr) = param {
+            if let Parameter::ActionRef(ptr) = param {
                 *ptr = renames[usize::try_from(*ptr)?];
             }
         }
@@ -322,12 +322,12 @@ pub fn main(args: Args) -> anyhow::Result<()> {
                     out.put_u32_le(filler);
                     out.put_u32_le(filler);
                 },
-                Parameter::LocalPointer(ptr) => {
+                Parameter::DataPointer(ptr) => {
                     out.put_u32_le(u32::try_from(data_base + usize::try_from(ptr)?)?);
                     out.put_u32_le(filler);
                     out.put_u32_le(filler);
                 },
-                Parameter::GlobalPointer(ptr) => {
+                Parameter::ActionRef(ptr) => {
                     out.put_u32_le(0xffffff41);
                     out.put_u32_le(u32::try_from(code_base + usize::try_from(ptr)?)?);
                     out.put_u32_le(filler);

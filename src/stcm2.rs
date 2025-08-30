@@ -13,17 +13,17 @@ pub const COLLECTION_LINK_MAGIC: &[u8] = b"COLLECTION_LINK\0";
 
 #[derive(Clone, Copy, Debug)]
 pub enum Parameter {
-    GlobalPointer(u32),
-    LocalPointer(u32),
+    ActionRef(u32),
+    DataPointer(u32),
     Value(u32)
 }
 
 impl Parameter {
     pub fn parse(value: [u32; 3], data_addr: u32, data_len: u32) -> anyhow::Result<Self> {
         match value {
-            [0xffffff41, addr, 0x40000000 | 0xff000000] => Ok(Self::GlobalPointer(addr)),
+            [0xffffff41, addr, 0x40000000 | 0xff000000] => Ok(Self::ActionRef(addr)),
             [addr, 0x40000000 | 0xff000000, 0x40000000 | 0xff000000]
-                if addr >= data_addr && addr < data_addr+data_len => Ok(Self::LocalPointer(addr-data_addr)),
+                if addr >= data_addr && addr < data_addr+data_len => Ok(Self::DataPointer(addr-data_addr)),
             [value, 0x40000000 | 0xff000000, 0x40000000 | 0xff000000] => Ok(Self::Value(value)),
             _ => Err(anyhow!("bad parameter: {value:08X?}"))
         }

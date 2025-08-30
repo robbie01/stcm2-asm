@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, collections::{btree_map, BTreeMap, HashSet}, fmt::Write as _, fs, mem, path::PathBuf, str, sync::LazyLock};
+use std::{borrow::Cow, cmp::Ordering, collections::{BTreeMap, HashSet}, fmt::Write as _, fs, mem, path::PathBuf, str, sync::LazyLock};
 use anyhow::{bail, ensure, Context as _};
 use bytes::{Buf as _, Bytes};
 use clap::Parser;
@@ -33,6 +33,16 @@ fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(Bytes, Bytes, boo
 
     let tail = str.split_off(len);
 
+    // ugly!! hack to output u32s
+    // this could have an unintended side effect of converting an
+    // intended string into a hex literal if it's 3 bytes or less.
+    // this would happen if the string was a single CJK character
+
+    // I need a heuristic to detect whether it's an int or a short string...
+    if str.len() == 4 && &str[..] != b"end\0" {
+        return Ok((str, tail, false))
+    }
+
     // clip zeros off end
     let nzero = str.iter().rev().take_while(|&&n| n == 0).count();
     let canonical = matches!(nzero, 1..=4);
@@ -43,8 +53,8 @@ fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(Bytes, Bytes, boo
     Ok((str, tail, canonical))
 }
 
-fn autolabel(addr: u32) -> Bytes {
-    let label = format!("local_{addr:X}");
+fn autolabel(prefix: &str, addr: u32) -> Bytes {
+    let label = format!("{prefix}_{addr:X}");
     label.into_bytes().into()
 }
 
@@ -108,7 +118,7 @@ fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
     for (&addr, act) in acts {
         current_labels.insert(addr);
         for param in &act.params {
-            if let Parameter::GlobalPointer(ptr) = *param {
+            if let Parameter::ActionRef(ptr) = *param {
                 current_labels.insert(ptr);
             }
         }
@@ -128,15 +138,23 @@ fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
     let mut cur = 0;
     while cur + 1 < chunks.len() {
         // find the last intersecting chunk, then take the union of that whole range
-        for (i, (h, _)) in chunks.iter().enumerate().skip(cur+1).rev() {
-            if !chunks[cur].0.is_disjoint(h) {
-                for _ in cur+1..=i {
-                    let (h, v) = chunks.remove(cur+1);
-                    chunks[cur].0.extend(h);
-                    chunks[cur].1.extend(v);
+        // iterate until no more matches (handles an edge case)
+        loop {
+            let mut found = false;
+
+            for (i, (h, _)) in chunks.iter().enumerate().skip(cur+1).rev() {
+                if !chunks[cur].0.is_disjoint(h) {
+                    for _ in cur+1..=i {
+                        let (h, v) = chunks.remove(cur+1);
+                        chunks[cur].0.extend(h);
+                        chunks[cur].1.extend(v);
+                    }
+                    found = true;
+                    break;
                 }
-                break;
             }
+
+            if !found { break }
         }
 
         cur += 1;
@@ -155,16 +173,20 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     for act in stcm2.actions.values() {
         if let Action { call: true, opcode, .. } = *act
             && stcm2.actions.get(&opcode).context("bruh0")?.export.is_none()
-            && let btree_map::Entry::Vacant(entry) = autolabels.entry(opcode)
         {
-            entry.insert(autolabel(opcode));
+            let ent: &mut Bytes = autolabels.entry(opcode).or_default();
+            if !ent.starts_with(b"fn") {
+                *ent = autolabel("fn", opcode);
+            }
         }
         for &param in &act.params {
-            if let Parameter::GlobalPointer(addr) = param
+            if let Parameter::ActionRef(addr) = param
                 && stcm2.actions.get(&addr).context("bruh9")?.export.is_none()
-                && let btree_map::Entry::Vacant(entry) = autolabels.entry(addr)
             {
-                entry.insert(autolabel(addr));
+                let ent = autolabels.entry(addr).or_default();
+                if ent.is_empty() {
+                    *ent = autolabel("local", addr);
+                }
             }
         }
     }
@@ -216,8 +238,8 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             for &param in params {
                 match param {
                     Parameter::Value(v) => print!(", {v:X}"),
-                    Parameter::GlobalPointer(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label().context("bruh6")?)),
-                    Parameter::LocalPointer(addr) => print!(", [data+{addr}]")
+                    Parameter::ActionRef(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label().context("bruh6")?)),
+                    Parameter::DataPointer(addr) => print!(", [data+{addr}]")
                 }
             }
 
@@ -228,29 +250,39 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 
             while pos < data.len() {
                 if let Ok((s, tail, canonical)) = decode_string(pos.try_into()?, data.clone()) {
-                    let s = decode_with_hex_replacement(args.encoding.get(), &s);
                     if pos != 0 {
                         print!("{sep} {}", Base64Display::new(&data[..pos], &BASE64_STANDARD_NO_PAD));
                         sep = ",";
                     }
-                    if canonical {
-                        print!("{sep} \"");
+
+                    if !canonical && s.len() == 4 {
+                        let n = u32::from_le_bytes(s[..].try_into().unwrap());
+                        if n < 0xFF000000 {
+                            print!("{sep} ={n}")
+                        } else {
+                            print!("{sep} ={n:X}h");
+                        }
                     } else {
-                        print!("{sep} @\"");
+                        let s = decode_with_hex_replacement(args.encoding.get(), &s);
+                        if canonical {
+                            print!("{sep} \"");
+                        } else {
+                            print!("{sep} @\"");
+                        }
+                        for ch in s.chars() {
+                            if ch.is_control() {
+                                print!(r"\x{:02x}", u32::from(ch));
+                            } else if ch == '\u{1f5ff}' {
+                                print!(r"\");
+                            } else if ch == '"' || ch == '\\' {
+                                print!(r"\{ch}");
+                            } else {
+                                print!("{ch}");
+                            }
+                        }
+                        print!("\"");
                     }
                     sep = ",";
-                    for ch in s.chars() {
-                        if ch.is_control() {
-                            print!(r"\x{:02x}", u32::from(ch));
-                        } else if ch == '\u{1f5ff}' {
-                            print!(r"\");
-                        } else if ch == '"' || ch == '\\' {
-                            print!(r"\{ch}");
-                        } else {
-                            print!("{ch}");
-                        }
-                    }
-                    print!("\"");
                     data = tail;
                     pos = 0;
                     continue;
