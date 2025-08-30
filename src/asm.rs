@@ -322,6 +322,11 @@ pub fn main(args: Args) -> anyhow::Result<()> {
                     out.put_u32_le(filler);
                     out.put_u32_le(filler);
                 },
+                Parameter::GlobalDataPointer(ptr) => {
+                    out.put_u32_le(u32::try_from(GLOBAL_DATA_OFFSET)? + ptr);
+                    out.put_u32_le(filler);
+                    out.put_u32_le(filler);
+                },
                 Parameter::DataPointer(ptr) => {
                     out.put_u32_le(u32::try_from(data_base + usize::try_from(ptr)?)?);
                     out.put_u32_le(filler);

@@ -5,7 +5,7 @@ use bytes::{Buf as _, Bytes};
 
 pub const STCM2_MAGIC: &[u8] = b"STCM2";
 pub const STCM2_TAG_LENGTH: usize = 32 - STCM2_MAGIC.len();
-pub const GLOBAL_DATA_MAGIC: &[u8] = b"GLOBAL_DATA\0\0\0\0\0";
+pub const GLOBAL_DATA_MAGIC: &[u8] = b"GLOBAL_DATA\0";
 pub const GLOBAL_DATA_OFFSET: usize = STCM2_MAGIC.len() + STCM2_TAG_LENGTH + 12*4 + GLOBAL_DATA_MAGIC.len();
 pub const CODE_START_MAGIC: &[u8] = b"CODE_START_\0";
 pub const EXPORT_DATA_MAGIC: &[u8] = b"EXPORT_DATA\0";
@@ -15,15 +15,19 @@ pub const COLLECTION_LINK_MAGIC: &[u8] = b"COLLECTION_LINK\0";
 pub enum Parameter {
     ActionRef(u32),
     DataPointer(u32),
-    Value(u32)
+    Value(u32),
+    GlobalDataPointer(u32)
 }
 
 impl Parameter {
-    pub fn parse(value: [u32; 3], data_addr: u32, data_len: u32) -> anyhow::Result<Self> {
+    pub fn parse(value: [u32; 3], data_addr: u32, data_len: u32, global_data_len: u32) -> anyhow::Result<Self> {
+        const GDO: u32 = GLOBAL_DATA_OFFSET as u32;
         match value {
             [0xffffff41, addr, 0x40000000 | 0xff000000] => Ok(Self::ActionRef(addr)),
             [addr, 0x40000000 | 0xff000000, 0x40000000 | 0xff000000]
                 if addr >= data_addr && addr < data_addr+data_len => Ok(Self::DataPointer(addr-data_addr)),
+            [addr, 0x40000000 | 0xff000000, 0x40000000 | 0xff000000]
+                if addr >= GDO && addr < GDO+global_data_len => Ok(Self::GlobalDataPointer(addr-GDO)),
             [value, 0x40000000 | 0xff000000, 0x40000000 | 0xff000000] => Ok(Self::Value(value)),
             _ => Err(anyhow!("bad parameter: {value:08X?}"))
         }
@@ -89,7 +93,7 @@ pub fn from_bytes(mut file: Bytes) -> anyhow::Result<Stcm2> {
     ensure!(get_pos(&file) == GLOBAL_DATA_OFFSET);
     let mut global_len = 0;
     while !file[global_len..].starts_with(CODE_START_MAGIC) {
-        global_len += 16;
+        global_len += 4;
     }
     let global_data = file.split_to(global_len);
     ensure!(file.starts_with(CODE_START_MAGIC));
@@ -113,7 +117,7 @@ pub fn from_bytes(mut file: Bytes) -> anyhow::Result<Stcm2> {
         let mut params = Vec::with_capacity(nparams.try_into()?);
         for _ in 0..nparams {
             let buffer = [file.get_u32_le(), file.get_u32_le(), file.get_u32_le()];
-            params.push(Parameter::parse(buffer, addr + 16 + 12*nparams, length - 16 - 12*nparams)?);
+            params.push(Parameter::parse(buffer, addr + 16 + 12*nparams, length - 16 - 12*nparams, global_len.try_into()?)?);
         }
 
         let ndata = length - 16 - 12*nparams;
