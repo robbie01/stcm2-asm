@@ -203,7 +203,9 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 
             if let Some(label) = act.label() {
                 let label = label_to_string(label);
-                print!("{label}: ");
+                print!("{label:>14}: ");
+            } else {
+                print!("                ")
             }
 
             let Action { call, opcode, ref params, ref data, .. } = *act;
