@@ -106,21 +106,10 @@ fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
     let mut current_chunk = Vec::new();
 
     for (&addr, act) in acts {
-        if let Some(label) = &act.export {
-            current_labels.insert(if let Some(pos) = label.iter().position(|&v| v == 0) {
-                label.slice(..pos)
-            } else {
-                label.clone()
-            });
-        }
+        current_labels.insert(addr);
         for param in &act.params {
-            if let Parameter::GlobalPointer(ptr) = param {
-                let label = acts.get(&ptr).unwrap().export.as_ref().unwrap();
-                current_labels.insert(if let Some(pos) = label.iter().position(|&v| v == 0) {
-                    label.slice(..pos)
-                } else {
-                    label.clone()
-                });
+            if let Parameter::GlobalPointer(ptr) = *param {
+                current_labels.insert(ptr);
             }
         }
         current_chunk.push((addr, act));
@@ -138,13 +127,19 @@ fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
 
     let mut cur = 0;
     while cur + 1 < chunks.len() {
-        if chunks[cur].0.is_disjoint(&chunks[cur+1].0) {
-            cur += 1;
-        } else {
-            let (h, v) = chunks.remove(cur+1);
-            chunks[cur].0.extend(h);
-            chunks[cur].1.extend(v);
+        // find the last intersecting chunk, then take the union of that whole range
+        for (i, (h, _)) in chunks.iter().enumerate().skip(cur+1).rev() {
+            if !chunks[cur].0.is_disjoint(h) {
+                for _ in cur+1..=i {
+                    let (h, v) = chunks.remove(cur+1);
+                    chunks[cur].0.extend(h);
+                    chunks[cur].1.extend(v);
+                }
+                break;
+            }
         }
+
+        cur += 1;
     }
 
     chunks.into_iter().map(|z| z.1).collect()
