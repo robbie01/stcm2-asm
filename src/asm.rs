@@ -37,7 +37,7 @@ fn decode_label(label: &str) -> Cow<'_, [u8]> {
 fn cow_str_to_bytes<'a>(encoding: &'static encoding_rs::Encoding, s: Cow<'a, str>) -> Cow<'a, [u8]> {
     match s {
         Cow::Borrowed(s) => {
-            let (s, _, replaced) = encoding.encode(&s);
+            let (s, _, replaced) = encoding.encode(s);
             if replaced { println!("warning: encountered unmappable character"); }
             s
         },
@@ -150,6 +150,8 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     let mut pending_references = IndexMap::new();
 
     for instr in code {
+        if instr.is_empty() { continue }
+
         let count = u32::try_from(actions.len())?;
 
         let mut instr = &instr[..];

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, collections::{btree_map, BTreeMap}, fmt::Write as _, fs, path::PathBuf, str, sync::LazyLock};
+use std::{borrow::Cow, cmp::Ordering, collections::{btree_map, BTreeMap, HashSet}, fmt::Write as _, fs, mem, path::PathBuf, str, sync::LazyLock};
 use anyhow::{bail, ensure, Context as _};
 use bytes::{Buf as _, Bytes};
 use clap::Parser;
@@ -97,32 +97,85 @@ fn label_to_string(label: &[u8]) -> Cow<'_, str> {
     })).unwrap()
 }
 
+// Heuristically determine function boundaries by splitting on returns,
+// and combining based on labels and local jumps.
+// This could probably be more efficient using u32 ranges to represent chunks
+fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
+    let mut chunks = Vec::new();
+    let mut current_labels = HashSet::new();
+    let mut current_chunk = Vec::new();
+
+    for (&addr, act) in acts {
+        if let Some(label) = &act.export {
+            current_labels.insert(if let Some(pos) = label.iter().position(|&v| v == 0) {
+                label.slice(..pos)
+            } else {
+                label.clone()
+            });
+        }
+        for param in &act.params {
+            if let Parameter::GlobalPointer(ptr) = param {
+                let label = acts.get(&ptr).unwrap().export.as_ref().unwrap();
+                current_labels.insert(if let Some(pos) = label.iter().position(|&v| v == 0) {
+                    label.slice(..pos)
+                } else {
+                    label.clone()
+                });
+            }
+        }
+        current_chunk.push((addr, act));
+        if !act.call && act.opcode == 0 {
+            chunks.push((
+                mem::take(&mut current_labels),
+                mem::take(&mut current_chunk)
+            ));
+        }
+    }
+
+    if !current_chunk.is_empty() {
+        chunks.push((current_labels, current_chunk));
+    }
+
+    let mut cur = 0;
+    while cur + 1 < chunks.len() {
+        if chunks[cur].0.is_disjoint(&chunks[cur+1].0) {
+            cur += 1;
+        } else {
+            let (h, v) = chunks.remove(cur+1);
+            chunks[cur].0.extend(h);
+            chunks[cur].1.extend(v);
+        }
+    }
+
+    chunks.into_iter().map(|z| z.1).collect()
+}
+
 pub fn main(args: Args) -> anyhow::Result<()> {
     let file = fs::read(args.file)?.into();
 
     let mut stcm2 = from_bytes(file)?;
 
     // build symbol table and autolabels
-    let mut labels = BTreeMap::new();
+    let mut autolabels = BTreeMap::new();
     for act in stcm2.actions.values() {
         if let Action { call: true, opcode, .. } = *act
             && stcm2.actions.get(&opcode).context("bruh0")?.export.is_none()
-            && let btree_map::Entry::Vacant(entry) = labels.entry(opcode)
+            && let btree_map::Entry::Vacant(entry) = autolabels.entry(opcode)
         {
             entry.insert(autolabel(opcode));
         }
         for &param in &act.params {
             if let Parameter::GlobalPointer(addr) = param
                 && stcm2.actions.get(&addr).context("bruh9")?.export.is_none()
-                && let btree_map::Entry::Vacant(entry) = labels.entry(addr)
+                && let btree_map::Entry::Vacant(entry) = autolabels.entry(addr)
             {
                 entry.insert(autolabel(addr));
             }
         }
     }
-    if let Some(((&begin, _), (&end, _))) = labels.first_key_value().zip(labels.last_key_value()) {
+    if let (Some((&begin, _)), Some((&end, _))) = (autolabels.first_key_value(), autolabels.last_key_value()) {
         let mut acts = stcm2.actions.range_mut(begin..=end);
-        for (addr, label) in labels {
+        for (addr, label) in autolabels {
             let act = loop {
                 let (&k, v) = acts.next().context("this should never happen 1")?;
                 match k.cmp(&addr) {
@@ -140,76 +193,80 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     println!(".tag \"{tag}\"");
     println!(".global_data {}", Base64Display::new(&stcm2.global_data, &BASE64_STANDARD_NO_PAD));
     println!(".code_start");
-    for (&addr, act) in &stcm2.actions {
-        if args.address {
-            print!("{addr:06X} ");
-        }
 
-        if let Some(label) = act.label() {
-            let label = label_to_string(label);
-            print!("{label}: ");
-        }
-
-        let Action { call, opcode, ref params, ref data, .. } = *act;
-        
-        if call {
-            print!("call {}", label_to_string(stcm2.actions.get(&opcode).context("bruh")?.label().context("bruh2")?));
-        } else if opcode == 0 && params.is_empty() {
-            print!("return");
-        } else {
-            print!("raw {opcode:X}");
-        }
-
-        for &param in params {
-            match param {
-                Parameter::Value(v) => print!(", {v:X}"),
-                Parameter::GlobalPointer(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label().context("bruh6")?)),
-                Parameter::LocalPointer(addr) => print!(", [data+{addr}]")
-            }
-        }
-
-        let mut data = data.clone();
-        let mut pos = 0;
-
-        let mut sep = " !";
-
-        while pos < data.len() {
-            if let Ok((s, tail, canonical)) = decode_string(pos.try_into()?, data.clone()) {
-                let s = decode_with_hex_replacement(args.encoding.get(), &s);
-                if pos != 0 {
-                    print!("{sep} {}", Base64Display::new(&data[..pos], &BASE64_STANDARD_NO_PAD));
-                    sep = ",";
-                }
-                if canonical {
-                    print!("{sep} \"");
-                } else {
-                    print!("{sep} @\"");
-                }
-                sep = ",";
-                for ch in s.chars() {
-                    if ch.is_control() {
-                        print!(r"\x{:02x}", u32::from(ch));
-                    } else if ch == '\u{1f5ff}' {
-                        print!(r"\");
-                    } else if ch == '"' || ch == '\\' {
-                        print!(r"\{ch}");
-                    } else {
-                        print!("{ch}");
-                    }
-                }
-                print!("\"");
-                data = tail;
-                pos = 0;
-                continue;
-            }
-
-            pos += 1;
-        }
-
-        if !data.is_empty() {
-            print!("{sep} {}", Base64Display::new(&data, &BASE64_STANDARD_NO_PAD));
-        }
+    for chunk in chunk_actions(&stcm2.actions) {
         println!();
+        for (addr, act) in chunk {
+            if args.address {
+                print!("{addr:06X} ");
+            }
+
+            if let Some(label) = act.label() {
+                let label = label_to_string(label);
+                print!("{label}: ");
+            }
+
+            let Action { call, opcode, ref params, ref data, .. } = *act;
+            
+            if call {
+                print!("call {}", label_to_string(stcm2.actions.get(&opcode).context("bruh")?.label().context("bruh2")?));
+            } else if opcode == 0 && params.is_empty() {
+                print!("return");
+            } else {
+                print!("raw {opcode:X}");
+            }
+
+            for &param in params {
+                match param {
+                    Parameter::Value(v) => print!(", {v:X}"),
+                    Parameter::GlobalPointer(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label().context("bruh6")?)),
+                    Parameter::LocalPointer(addr) => print!(", [data+{addr}]")
+                }
+            }
+
+            let mut data = data.clone();
+            let mut pos = 0;
+
+            let mut sep = " !";
+
+            while pos < data.len() {
+                if let Ok((s, tail, canonical)) = decode_string(pos.try_into()?, data.clone()) {
+                    let s = decode_with_hex_replacement(args.encoding.get(), &s);
+                    if pos != 0 {
+                        print!("{sep} {}", Base64Display::new(&data[..pos], &BASE64_STANDARD_NO_PAD));
+                        sep = ",";
+                    }
+                    if canonical {
+                        print!("{sep} \"");
+                    } else {
+                        print!("{sep} @\"");
+                    }
+                    sep = ",";
+                    for ch in s.chars() {
+                        if ch.is_control() {
+                            print!(r"\x{:02x}", u32::from(ch));
+                        } else if ch == '\u{1f5ff}' {
+                            print!(r"\");
+                        } else if ch == '"' || ch == '\\' {
+                            print!(r"\{ch}");
+                        } else {
+                            print!("{ch}");
+                        }
+                    }
+                    print!("\"");
+                    data = tail;
+                    pos = 0;
+                    continue;
+                }
+
+                pos += 1;
+            }
+
+            if !data.is_empty() {
+                print!("{sep} {}", Base64Display::new(&data, &BASE64_STANDARD_NO_PAD));
+            }
+            println!();
+        }
     }
 
     Ok(())
