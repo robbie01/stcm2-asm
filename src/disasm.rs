@@ -91,10 +91,10 @@ fn cow_bytes_to_str(bytes: Cow<'_, [u8]>) -> Option<Cow<'_, str>> {
     }
 }
 
-static ILLEGAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?-u:[^!-\[\]-~])").unwrap());
-
 // Always interpret labels as ASCII
 fn label_to_string(label: &[u8]) -> Cow<'_, str> {
+    static ILLEGAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?-u:[^!-\[\]-~])").unwrap());
+
     cow_bytes_to_str(ILLEGAL.replace_all(label, |c: &Captures<'_>| {
         let substr = c.get(0).unwrap().as_bytes();
         assert_eq!(substr.len(), 1);
@@ -207,6 +207,8 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     println!(".global_data {}", Base64Display::new(&stcm2.global_data, &BASE64_STANDARD_NO_PAD));
     println!(".code_start");
 
+    let maxlabel = stcm2.actions.values().filter_map(|act| act.label()).map(|l| l.len()).max().unwrap_or_default().max(14);
+
     for chunk in chunk_actions(&stcm2.actions) {
         println!();
         for (addr, act) in chunk {
@@ -216,9 +218,9 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 
             if let Some(label) = act.label() {
                 let label = label_to_string(label);
-                print!("{label:>14}: ");
+                print!("{label:>maxlabel$}: ");
             } else {
-                print!("                ")
+                print!("{:maxlabel$}  ", "");
             }
 
             let Action { call, opcode, ref params, ref data, .. } = *act;

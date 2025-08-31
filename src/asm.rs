@@ -18,9 +18,6 @@ pub struct Args {
     output: PathBuf
 }
 
-static INITIAL_ADDRESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9A-F]{6} +").unwrap());
-static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^((?:[!-\[\]-~]|\\x[0-9a-f]{2})+): ").unwrap());
-
 fn decode_label(label: &str) -> Cow<'_, [u8]> {
     use regex::bytes::*;
 
@@ -117,6 +114,9 @@ fn encode_string(encoding: &'static encoding_rs::Encoding, inner: &str, canonica
 }
 
 pub fn main(args: Args) -> anyhow::Result<()> {
+    static INITIAL_ADDRESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9A-F]{6} +").unwrap());
+    static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^((?:[!-\[\]-~]|\\x[0-9a-f]{2})+): ").unwrap());
+
     let mut lines = BufReader::new(File::open(args.input)?).lines().collect::<io::Result<Vec<_>>>()?;
 
     for line in &mut lines {
