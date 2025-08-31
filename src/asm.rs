@@ -49,7 +49,17 @@ fn cow_str_to_bytes<'a>(encoding: &'static encoding_rs::Encoding, s: Cow<'a, str
     }
 }
 
-fn encode_string(encoding: &'static encoding_rs::Encoding, inner: &str, canonical: bool, buffer: &mut Vec<u8>) -> anyhow::Result<()> {
+fn encode_bytestring(type_: u32, inner: &[u8], buffer: &mut Vec<u8>) -> anyhow::Result<()> {
+    ensure!(inner.len() % 4 == 0, "must be divisible by 4");
+    buffer.put_u32_le(type_);
+    buffer.put_u32_le((inner.len() / 4).try_into()?);
+    buffer.put_u32_le(1);
+    buffer.put_u32_le(inner.len().try_into()?);
+    buffer.put_slice(inner);
+    Ok(())
+}
+
+fn encode_string(encoding: &'static encoding_rs::Encoding, inner: &str, buffer: &mut Vec<u8>) -> anyhow::Result<()> {
     fn unsub_wellformed(wf: &str) -> Cow<'_, str> {
         // note: this is a str regex
         static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\\(?:x([0-9a-f]{2})|(["\\]))"#).unwrap());
@@ -93,12 +103,7 @@ fn encode_string(encoding: &'static encoding_rs::Encoding, inner: &str, canonica
     
     let len = pieces.iter().map(|b| b.len()).sum::<usize>();
 
-    let nzero = if canonical {
-        4 - len % 4
-    } else {
-        ensure!(len % 4 == 0);
-        0
-    };
+    let nzero = 4 - len % 4;
     let len = u32::try_from(len + nzero)?;
     let qlen = len / 4;
     
@@ -181,7 +186,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 
         let mut split = instr.split(" ! ").fuse();
         let text = split.next().context("huh")?;
-        let data = split.next();
+        let junk = split.next().unwrap_or_default();
         ensure!(split.next().is_none(), "huh2");
 
         let mut split = text.split(", ").fuse();
@@ -203,45 +208,51 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             bail!("invalid op {op}");
         };
 
-        let params = split.map(|param| Ok(if let Some(param) = param.strip_prefix('[') {
-            let param = param.strip_suffix(']').context("no matching bracket??")?;
-            if let Some(ptr) = param.strip_prefix("data+") {
-                Parameter::DataPointer(ptr.parse()?)
-            } else {
-                let ent = pending_references.entry(decode_label(param));
-                let idx = ent.index();
-                ent.or_default();
-                let ptr = !u32::try_from(idx)?;
-                Parameter::ActionRef(ptr)
-            }
-        } else {
-            Parameter::Value(u32::from_str_radix(param, 16)?)
-        })).collect::<anyhow::Result<Vec<Parameter>>>()?;
+        let mut data = Vec::new();
+        BASE64_STANDARD_NO_PAD.decode_vec(junk, &mut data)?;
 
-        let data = Bytes::from(data.iter().flat_map(|d| d.split(", ")).try_fold(Vec::new(), |mut buffer, mut incoming| {
-            if incoming.starts_with(['"', '@']) {
-                let canonical = if let Some(s) = incoming.strip_prefix('@') {
-                    incoming = s;
-                    false
+        let params = split.map(|param| Ok(
+            if let Some(s) = param.strip_prefix('"') {
+                let s = s.strip_suffix('"').context(format!("no ending quote for {instr}"))?;
+                let ptr = u32::try_from(data.len())?;
+                encode_string(args.encoding.get(), s, &mut data)?;
+                Parameter::DataPointer(ptr)
+            } else if let Some(lit) = param.strip_prefix(['=', '@']) {
+                let (type_, lit) = if let Some(lit) = lit.strip_prefix('=') {
+                    (1, lit)
                 } else {
-                    true
+                    (0, lit)
                 };
-                incoming = incoming
-                    .strip_prefix('"').context("no starting quote")?
-                    .strip_suffix('"').context(format!("no ending quote for {instr}"))?;
-                encode_string(args.encoding.get(), incoming, canonical, &mut buffer)?;
+                let lit = if let Some(lit) = lit.strip_suffix('h') {
+                    u32::from_str_radix(lit, 16)?
+                } else {
+                    lit.parse()?
+                };
+                let ptr = u32::try_from(data.len())?;
+                encode_bytestring(type_, &lit.to_le_bytes(), &mut data)?;
+                Parameter::DataPointer(ptr)
+            } else if let Some(param) = param.strip_prefix('[') {
+                let param = param.strip_suffix(']').context("no matching bracket??")?;
+                if let Some(ptr) = param.strip_prefix("global_data+") {
+                    Parameter::GlobalDataPointer(ptr.parse()?)
+                } else {
+                    let ent = pending_references.entry(decode_label(param));
+                    let idx = ent.index();
+                    ent.or_default();
+                    let ptr = !u32::try_from(idx)?;
+                    Parameter::ActionRef(ptr)
+                }
             } else {
-                BASE64_STANDARD_NO_PAD.decode_vec(incoming, &mut buffer)?;
+                Parameter::Value(u32::from_str_radix(param, 16)?)
             }
-            Ok::<_, anyhow::Error>(buffer)
-        })?);
+        )).collect::<anyhow::Result<Vec<Parameter>>>()?;
 
         actions.push(Action {
             export: label.map(|s| Bytes::from(s.into_owned())),
             call,
             opcode,
             params,
-            data
+            data: data.into()
         });
     }
 

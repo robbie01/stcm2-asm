@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, collections::{BTreeMap, HashSet}, fmt::Write as _, fs, mem, path::PathBuf, str, sync::LazyLock};
+use std::{borrow::Cow, cmp::Ordering, collections::{BTreeMap, HashMap, HashSet}, fmt::Write as _, fs, mem, path::PathBuf, str, sync::LazyLock};
 use anyhow::{bail, ensure, Context as _};
 use bytes::{Buf as _, Bytes};
 use clap::Parser;
@@ -14,15 +14,34 @@ pub struct Args {
     address: bool,
     #[arg(from_global)]
     encoding: super::Encoding,
+    #[arg(short = 'j', help = "print binary junk data (for reproducible files)")]
+    junk: bool,
     file: PathBuf
 }
 
-fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(Bytes, Bytes, bool)> {
+#[derive(Debug, Clone)]
+enum StringType {
+    String(Bytes),
+    Type0U32(u32),
+    Type1U32(u32)
+}
+
+impl StringType {
+    fn type_(&self) -> u32 {
+        match self {
+            Self::String(_) | Self::Type0U32(_) => 0,
+            Self::Type1U32(_) => 1
+        }
+    }
+}
+
+fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(StringType, Bytes)> {
     str.advance(addr as usize);
 
     ensure!(str.len() > 16, "not enough room for magic");
 
-    ensure!(str.get_u32_le() == 0, "string magic isn't 0");
+    let type_ = str.get_u32_le();
+    ensure!(matches!(type_, 0 | 1), "string magic isn't 0 or 1");
     let qlen = str.get_u32_le();
     ensure!(str.get_u32_le() == 1, "string magic isn't 1");
     let len = str.get_u32_le();
@@ -35,18 +54,24 @@ fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(Bytes, Bytes, boo
 
     // hack to output u32s (i should really change the API here)
     // do you like my heuristic? :) it seems like the game only uses ints that aren't 6-digit hex
-    if str[..].try_into().is_ok_and(|u| !matches!(u32::from_le_bytes(u), 0x100000..0x1000000)) {
-        return Ok((str, tail, false))
+    if let Ok(n) = str[..].try_into().map(u32::from_le_bytes)
+        && (type_ == 1 || !matches!(n, 0x100000..0x1000000))
+    {
+        return Ok((match type_ {
+            0 => StringType::Type0U32(n),
+            1 => StringType::Type1U32(n),
+            _ => unreachable!()
+        }, tail))
     }
+
+    ensure!(type_ == 0, "string type is 1, but is not a u32");
 
     // clip zeros off end
     let nzero = str.iter().rev().take_while(|&&n| n == 0).count();
-    let canonical = matches!(nzero, 1..=4);
-    if canonical {
-        str.truncate(str.len() - nzero);
-    }
+    ensure!(matches!(nzero, 1..=4), "string is not canonical");
+    str.truncate(str.len() - nzero);
 
-    Ok((str, tail, canonical))
+    Ok((StringType::String(str), tail))
 }
 
 fn autolabel(prefix: &str, addr: u32) -> Bytes {
@@ -233,55 +258,25 @@ pub fn main(args: Args) -> anyhow::Result<()> {
                 print!("raw {opcode:X}");
             }
 
-            for &param in params {
-                match param {
-                    Parameter::Value(v) => print!(", {v:X}"),
-                    Parameter::ActionRef(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label().context("bruh6")?)),
-                    Parameter::DataPointer(addr) => print!(", [data+{addr}]"),
-                    Parameter::GlobalDataPointer(addr) => print!(", [global_data+{addr}]")
-                }
-            }
-
             let mut data = data.clone();
             let mut pos = 0;
+            let mut junk = Bytes::new();
 
-            let mut sep = " !";
+            let mut at_beginning = true;
+
+            let mut data_pos = HashMap::new();
 
             while pos < data.len() {
-                if let Ok((s, tail, canonical)) = decode_string(pos.try_into()?, data.clone()) {
+                if let Ok((s, tail)) = decode_string(pos.try_into()?, data.clone()) {
                     if pos != 0 {
-                        print!("{sep} {}", Base64Display::new(&data[..pos], &BASE64_STANDARD_NO_PAD));
-                        sep = ",";
+                        ensure!(at_beginning, "junk found after beginning");
+                        junk = data.slice(..pos);
                     }
+                    at_beginning = false;
 
-                    if !canonical && s.len() == 4 {
-                        let n = u32::from_le_bytes(s[..].try_into().unwrap());
-                        if n < 0xFF000000 {
-                            print!("{sep} ={n}")
-                        } else {
-                            print!("{sep} ={n:X}h");
-                        }
-                    } else {
-                        let s = decode_with_hex_replacement(args.encoding.get(), &s);
-                        if canonical {
-                            print!("{sep} \"");
-                        } else {
-                            print!("{sep} @\"");
-                        }
-                        for ch in s.chars() {
-                            if ch.is_control() {
-                                print!(r"\x{:02x}", u32::from(ch));
-                            } else if ch == '\u{1f5ff}' {
-                                print!(r"\");
-                            } else if ch == '"' || ch == '\\' {
-                                print!(r"\{ch}");
-                            } else {
-                                print!("{ch}");
-                            }
-                        }
-                        print!("\"");
-                    }
-                    sep = ",";
+                    let abs_pos = pos + usize::try_from(unsafe { data.as_ptr().offset_from(act.data.as_ptr()) })?;
+                    data_pos.insert(abs_pos, s);
+
                     data = tail;
                     pos = 0;
                     continue;
@@ -291,8 +286,54 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             }
 
             if !data.is_empty() {
-                print!("{sep} {}", Base64Display::new(&data, &BASE64_STANDARD_NO_PAD));
+                ensure!(at_beginning, "junk found after beginning");
+                junk = data;
             }
+
+            for &param in params {
+                match param {
+                    Parameter::Value(v) => print!(", {v:X}"),
+                    Parameter::ActionRef(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label().context("bruh6")?)),
+                    Parameter::DataPointer(addr) => {
+                        if let Some(s) = data_pos.get(&usize::try_from(addr)?) {
+                            match *s {
+                                ref s@StringType::Type0U32(n) | ref s@StringType::Type1U32(n) => {
+                                    let prefix = if s.type_() == 0 { "" } else { "@" };
+                                    if n < 0x10000000 {
+                                        print!(", {prefix}={n}")
+                                    } else {
+                                        print!(", {prefix}={n:X}h");
+                                    }
+                                },
+                                StringType::String(ref s) => {
+                                    let s   = decode_with_hex_replacement(args.encoding.get(), &s);
+                                    print!(", \"");
+                                    for ch in s.chars() {
+                                        if ch.is_control() {
+                                            print!(r"\x{:02x}", u32::from(ch));
+                                        } else if ch == '\u{1f5ff}' {
+                                            print!(r"\");
+                                        } else if ch == '"' || ch == '\\' {
+                                            print!(r"\{ch}");
+                                        } else {
+                                            print!("{ch}");
+                                        }
+                                    }   
+                                    print!("\"");
+                                }
+                            }
+                        } else {
+                            bail!("param references non-string");
+                        }
+                    },
+                    Parameter::GlobalDataPointer(addr) => print!(", [global_data+{addr}]")
+                }
+            }
+
+            if args.junk && !junk.is_empty() {
+                print!(" ! {}", Base64Display::new(&junk[..], &BASE64_STANDARD_NO_PAD));
+            }
+
             println!();
         }
     }
