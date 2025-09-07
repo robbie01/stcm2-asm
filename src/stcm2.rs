@@ -43,11 +43,10 @@ pub struct Action {
     pub data: Bytes
 }
 
-#[allow(dead_code)]
 impl Action {
-    // const OP_ADD: u32 = 0xffffff00;
+    //const OP_ADD: u32 = 0xffffff00;
     //const OP_SUB: u32 = 0xffffff01;
-    // const OP_MUL: u32 = 0xffffff02;
+    //const OP_MUL: u32 = 0xffffff02;
     //const OP_DIV: u32 = 0xffffff03;
     //const OP_MOD: u32 = 0xffffff04;
     //const OP_SHL: u32 = 0xffffff05;
@@ -56,12 +55,17 @@ impl Action {
     //const OP_XOR: u32 = 0xffffff08;
     //const OP_OR: u32 = 0xffffff09;
 
-    pub fn label(&self) -> Option<&[u8]> {
+    pub fn label(&self, junk: bool) -> Option<&[u8]> {
         let mut b = &self.export.as_ref()?[..];
-        while let [rst @ .., 0] = b {
-            b = rst;
+        if junk {
+            while let [rst @ .., 0] = b {
+                b = rst;
+            }
+            Some(b)
+        } else {
+            let pos = b.iter().position(|&z| z == 0).unwrap_or(b.len());
+            Some(&b[..pos])
         }
-        Some(b)
     }
 
     pub fn len(&self) -> usize {

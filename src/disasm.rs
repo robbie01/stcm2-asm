@@ -55,7 +55,7 @@ fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(StringType, Bytes
     // hack to output u32s (i should really change the API here)
     // do you like my heuristic? :) it seems like the game only uses ints that aren't 6-digit hex
     if let Ok(n) = str[..].try_into().map(u32::from_le_bytes)
-        && (type_ == 1 || !matches!(n, 0x100000..0x1000000))
+        && (type_ == 1 || !matches!(n, 0x100000..0x1000000 | 28783))
     {
         return Ok((match type_ {
             0 => StringType::Type0U32(n),
@@ -160,22 +160,19 @@ fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
     while cur + 1 < chunks.len() {
         // find the last intersecting chunk, then take the union of that whole range
         // iterate until no more matches (handles an edge case)
-        loop {
-            let mut found = false;
-
+        'outer: loop {
             for (i, (h, _)) in chunks.iter().enumerate().skip(cur+1).rev() {
                 if !chunks[cur].0.is_disjoint(h) {
-                    for _ in cur+1..=i {
-                        let (h, v) = chunks.remove(cur+1);
-                        chunks[cur].0.extend(h);
-                        chunks[cur].1.extend(v);
+                    let (mut h0, mut v0) = mem::take(&mut chunks[cur]);
+                    for (h, v) in chunks.drain(cur+1..=i) {
+                        h0.extend(h);
+                        v0.extend(v);
                     }
-                    found = true;
-                    break;
+                    chunks[cur] = (h0, v0);
+                    continue 'outer;
                 }
             }
-
-            if !found { break }
+            break;
         }
 
         cur += 1;
@@ -232,7 +229,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     println!(".global_data {}", Base64Display::new(&stcm2.global_data, &BASE64_STANDARD_NO_PAD));
     println!(".code_start");
 
-    let maxlabel = stcm2.actions.values().filter_map(|act| act.label()).map(|l| l.len()).max().unwrap_or_default().max(14);
+    let maxlabel = stcm2.actions.values().filter_map(|act| act.label(args.junk)).map(|l| l.len()).max().unwrap_or_default().max(14);
 
     for chunk in chunk_actions(&stcm2.actions) {
         println!();
@@ -241,7 +238,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
                 print!("{addr:06X} ");
             }
 
-            if let Some(label) = act.label() {
+            if let Some(label) = act.label(args.junk) {
                 let label = label_to_string(label);
                 print!("{label:>maxlabel$}: ");
             } else {
@@ -251,7 +248,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             let Action { call, opcode, ref params, ref data, .. } = *act;
             
             if call {
-                print!("call {}", label_to_string(stcm2.actions.get(&opcode).context("bruh")?.label().context("bruh2")?));
+                print!("call {}", label_to_string(stcm2.actions.get(&opcode).context("bruh")?.label(args.junk).context("bruh2")?));
             } else if opcode == 0 && params.is_empty() {
                 print!("return");
             } else {
@@ -293,7 +290,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             for &param in params {
                 match param {
                     Parameter::Value(v) => print!(", {v:X}"),
-                    Parameter::ActionRef(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label().context("bruh6")?)),
+                    Parameter::ActionRef(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label(args.junk).context("bruh6")?)),
                     Parameter::DataPointer(addr) => {
                         if let Some(s) = data_pos.get(&usize::try_from(addr)?) {
                             match *s {
@@ -306,7 +303,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
                                     }
                                 },
                                 StringType::String(ref s) => {
-                                    let s   = decode_with_hex_replacement(args.encoding.get(), &s);
+                                    let s   = decode_with_hex_replacement(args.encoding.get(), s);
                                     print!(", \"");
                                     for ch in s.chars() {
                                         if ch.is_control() {

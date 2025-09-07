@@ -173,17 +173,6 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             pending_references.insert(lbl, Some(count));
         }
 
-        // if instr == "return" {
-        //     actions.push(Action {
-        //         export: label.map(|s| Bytes::from(s.into_owned())),
-        //         call: false,
-        //         opcode: 0,
-        //         params: Vec::new(),
-        //         data: Bytes::new()
-        //     });
-        //     continue;
-        // }
-
         let mut split = instr.split(" ! ").fuse();
         let text = split.next().context("huh")?;
         let junk = split.next().unwrap_or_default();
