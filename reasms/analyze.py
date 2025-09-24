@@ -40,7 +40,10 @@ with (dir / "advfont.txt").open() as f:
 def get_width(text: str):
     return sum(xadv[c] for c in text)
 
-def breakup(line: str):
+def breakup(line: str, scale: float = 1.0):
+    if not line:
+        return ['']
+
     MAX_WIDTH = 1500
 
     words = line.strip().split()
@@ -55,7 +58,7 @@ def breakup(line: str):
             s = ''
         
         w = xadv.get(s, 0) + get_width(words[0])
-        if cur_width + w > MAX_WIDTH:
+        if scale * (cur_width + w) > MAX_WIDTH:
             chunks.append(cur)
             cur = ''
             cur_width = 0
@@ -68,8 +71,75 @@ def breakup(line: str):
     
     if cur:
         chunks.append(cur)
+
+    if scale != 1.0:
+        chunks[0] = f'#Scale[{scale}]{chunks[0]}'
     
     return chunks
+
+speakers = {
+    "#Name[1][#Name[2]]＝ラリック": "Hairi Lalique",
+    "おばあさん": "Grandmother",
+    "おばあちゃん": "Granny",
+    "アロマ店店主": "Aroma Shop Owner",
+    "カンパネラ": "Campanella",
+    "ハルモニア": "Harmonia",
+    "三人": "Three People",
+    "二人": "Two People",
+    "住民Ａ": "Resident A",
+    "住民Ｂ": "Resident B",
+    "刈鐘[カリガネ]": "Karigane",
+    "初代Ｍ": "First M",
+    "助手": "Assistant",
+    "司書": "Librarian",
+    "女性記者Ａ": "Female Reporter A",
+    "女性１": "Woman 1",
+    "女性２": "Woman 2",
+    "女性Ａ": "Woman A",
+    "子供": "Child",
+    "子供Ａ": "Child A",
+    "少女": "Girl",
+    "少女Ａ": "Girl A",
+    "少年": "Boy",
+    "店員": "Shop Clerk",
+    "廻螺[エラ]＝アマルリック": "Ela Amalric",
+    "憂漣[ユーレン]=ミュラー": "Ulen Muller",
+    "憂漣[ユーレン]ミュラー": "Ulen Muller",
+    "憂漣[ユーレン]＝ミュラー": "Ulen Muller",
+    "晩歌[バンカ]": "Banka",
+    "歌紫歌": "Kashika Galle",
+    "歌紫歌[カシカ]＝ガレ": "Kashika Galle",
+    "歌紫歌＆糸遠": "Kashika & Shion",
+    "泣虎[ナトラ]＝ピオニー": "Natra Peony",
+    "泣虎[ナトラ]＝ピオニー　": "Natra Peony",
+    "猿": "Monkey",
+    "王": "King",
+    "瑠璃[ルリ]": "Ruri",
+    "瑪衣[メイ]": "Mei",
+    "瑪衣[メイ] ": "Mei",
+    "男性": "Man",
+    "男性１": "Man 1",
+    "男性Ａ": "Man A",
+    "男１": "Man 1",
+    "番人１": "Guard 1",
+    "番人２": "Guard 2",
+    "番人Ａ": "Guard A",
+    "番人Ｂ": "Guard B",
+    "研究者Ａ": "Researcher A",
+    "研究者Ｂ": "Researcher B",
+    "糸遠[シオン]＝ラリック": "Shion Lalique",
+    "紫鳶[シエン]＝クリノクロア": "Shien Clinochlore",
+    "紫鳶＆黒禰": "Shien & Klone",
+    "綸燈[リンドウ]＝ウェステリア": "Rindo Westeria",
+    "衿栖[エリス]＝シュナイダー": "Eris Schneider",
+    "門番": "Gatekeeper",
+    "霞[カスミ]": "Kasumi",
+    "霞[カスミ]　　": "Kasumi",
+    "魔法使い": "Wizard",
+    "黒禰[クロネ]＝スピネル": "Klone Spinel",
+    "？？？": "???",
+    "Ｍ": "M"
+}
 
 db = sqlite3.connect(dir / "cpa.db", autocommit=False)
 
@@ -95,10 +165,18 @@ for path in paths:
     speaker: str
     translation: str
     variant_tl: str
-    for address, speaker, translation, variant_tl in cur:
+    for address, speaker, tl_body, tl_variant_body in cur:
         found = True
         while idx < len(asm) and get_address(asm[idx]) != address:
             idx += 1
+        
+        assert (speaker is not None) == (f'call fn_EB4C, "{speaker}"' in asm[idx])
+        if speaker is not None:
+            label = get_label(asm[idx])
+            line = f'call fn_EB4C, "{speakers[speaker]}"\n'
+            if label is not None:
+                line = f'{label}: {line}'
+            asm[idx] = line
 
         while idx < len(asm) and all(s not in asm[idx] for s in ['call fn_E340,', 'call fn_3B78C,', 'call fn_3BB24,', 'call fn_54B4C,']):
             idx += 1
@@ -108,17 +186,21 @@ for path in paths:
         
         # obvious hack
         # (ー is the katakana long vowel mark)
-        translation = translation.replace('—', 'ー').replace('é', 'e').replace('è', 'e').replace('à', 'a')
-        if variant_tl is not None:
-            variant_tl = variant_tl.replace('—', 'ー').replace('é', 'e').replace('è', 'e').replace('à', 'a')
+        tl_body = tl_body.replace('—', 'ー').replace('é', 'e').replace('è', 'e').replace('à', 'a').replace('…', '...')
+        if tl_variant_body is not None:
+            tl_variant_body = tl_variant_body.replace('—', 'ー').replace('é', 'e').replace('è', 'e').replace('à', 'a').replace('…', '...')
 
-        translation = breakup(translation)
+        scale = 1.0
+        while True:
+            translation = breakup(tl_body, scale)
+            if len(translation) <= 3:
+                break
+            scale -= 0.1
 
-        if any(s in asm[idx] for s in ['call fn_3B78C,', 'call fn_3BB24,', 'call fn_54B4C,']):
+        if (call := next((s[5:-1] for s in ['call fn_3B78C,', 'call fn_3BB24,', 'call fn_54B4C,'] if s in asm[idx]), None)) is not None:
             label = get_label(asm[idx])
-            call = next(s for s in ['call fn_3B78C,', 'call fn_3BB24,', 'call fn_54B4C,'] if s in asm[idx])[5:-1]
 
-            variant_tl = breakup(variant_tl) if variant_tl is not None else translation
+            variant_tl = breakup(tl_variant_body, scale) if tl_variant_body is not None else translation
 
             # todo: warn if overlong
 
@@ -147,7 +229,7 @@ for path in paths:
             
             continue
 
-        assert variant_tl is None
+        assert tl_variant_body is None
         
         label = None
         while idx < len(asm) and 'call fn_E340,' in asm[idx]:
@@ -159,8 +241,15 @@ for path in paths:
             del asm[idx]
         
         if len(translation) > 3:
-            print("overlong warning")
-        for tl in translation:
+            scale = 3 / len(translation)
+            translation[0] = f"#Scale[{scale}]{translation[0]}"
+        
+        for i, tl in enumerate(translation):
+            # hack that doesn't take into account some scenes (i.e. letter_male)
+            # todo: improve typesetting
+            # (note: investigate letter_male scenes)
+            # (note note: is letter_male supposed to be letter_mail? lol)
+
             tl = tl.replace('\\', '\\\\').replace(',', '\\x2c').replace('"', '\\"').replace('\n', '\\x0a').replace('\r', '\\x0d')
             line = f"call fn_E340, \"{tl}\"\n"
             if label is not None:
