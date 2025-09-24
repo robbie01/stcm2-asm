@@ -118,8 +118,63 @@ fn encode_string(encoding: &'static encoding_rs::Encoding, inner: &str, buffer: 
     Ok(())
 }
 
+fn split(orig: &str) -> anyhow::Result<(Vec<&str>, Option<&str>)> {
+    let mut instr = orig;
+    let mut parts = Vec::new();
+    loop {
+        instr = instr.trim_ascii_start();
+
+        if let Some(junk) = instr.strip_prefix("! ") {
+            break Ok((parts, Some(junk)))
+        } else if instr.is_empty() {
+            break Ok((parts, None))
+        }
+
+        if instr.starts_with('"') {
+            let mut skip = 0u32;
+            let mut end = None;
+            for (idx, ch) in instr.char_indices().skip(1) {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+
+                if ch == '"' {
+                    end = Some(idx + ch.len_utf8());
+                    break;
+                }
+
+                if ch == '\\' {
+                    if let Some(peek) = instr[idx + ch.len_utf8()..].chars().next() {
+                        if peek == '"' || peek == '\\' {
+                            skip = 1;
+                        } else if peek == 'x' {
+                            skip = 2;
+                        } else {
+                            bail!("unsupported escape: original line {orig}");
+                        }
+                    }
+                }
+            }
+            let end = end.context("bad quotes: original line {orig}")?;
+            parts.push(&instr[..end]);
+            let tail = &instr[end..];
+            instr = tail.strip_prefix(", ").unwrap_or(tail);
+        } else if let Some((head, tail)) = instr.split_once(',') {
+            parts.push(head);
+            instr = tail;
+        } else if let Some(j) = instr.find(" ! ") {
+            parts.push(&instr[..j]);
+            instr = &instr[j..];
+        } else {
+            parts.push(instr);
+            instr = "";
+        }
+    }
+}
+
 pub fn main(args: Args) -> anyhow::Result<()> {
-    static INITIAL_ADDRESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9A-F]{6} +").unwrap());
+    static INITIAL_ADDRESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[0-9A-F]{6})? +").unwrap());
     static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^((?:[!-\[\]-~]|\\x[0-9a-f]{2})+): ").unwrap());
 
     let mut lines = BufReader::new(File::open(args.input)?).lines().collect::<io::Result<Vec<_>>>()?;
@@ -173,13 +228,9 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             pending_references.insert(lbl, Some(count));
         }
 
-        let mut split = instr.split(" ! ").fuse();
-        let text = split.next().context("huh")?;
-        let junk = split.next().unwrap_or_default();
-        ensure!(split.next().is_none(), "huh2");
-
-        let mut split = text.split(", ").fuse();
-        let op = split.next().context("huh3")?;
+        let (split, junk) = split(instr)?;
+        let op = split[0];
+        let junk = junk.unwrap_or_default();
 
         let (call, opcode) = if let Some(op) = op.strip_prefix("raw ") {
             let opcode = u32::from_str_radix(op, 16)?;
@@ -200,7 +251,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         let mut data = Vec::new();
         BASE64_STANDARD_NO_PAD.decode_vec(junk, &mut data)?;
 
-        let params = split.map(|param| Ok(
+        let params = split[1..].iter().map(|&param| Ok(
             if let Some(s) = param.strip_prefix('"') {
                 let s = s.strip_suffix('"').context(format!("no ending quote for {instr}"))?;
                 let ptr = u32::try_from(data.len())?;
