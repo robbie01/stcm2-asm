@@ -1,6 +1,6 @@
 use std::{borrow::Cow, fs::{self, File}, io::{self, BufRead, BufReader}, mem, path::PathBuf, ptr, sync::LazyLock};
 
-use anyhow::{bail, ensure, Context};
+use anyhow::{bail, ensure, Context as _};
 use bstr::BStr;
 use bytes::{BufMut, Bytes};
 use clap::Parser;
@@ -156,7 +156,7 @@ fn split(orig: &str) -> anyhow::Result<(Vec<&str>, Option<&str>)> {
                     }
                 }
             }
-            let end = end.context("bad quotes: original line {orig}")?;
+            let end = end.with_context(|| format!("bad quotes: original line {orig}"))?;
             parts.push(&instr[..end]);
             let tail = &instr[end..];
             instr = tail.strip_prefix(", ").unwrap_or(tail);
@@ -253,7 +253,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 
         let params = split[1..].iter().map(|&param| Ok(
             if let Some(s) = param.strip_prefix('"') {
-                let s = s.strip_suffix('"').context(format!("no ending quote for {instr}"))?;
+                let s = s.strip_suffix('"').with_context(|| format!("no ending quote for {instr}"))?;
                 let ptr = u32::try_from(data.len())?;
                 encode_string(args.encoding.get(), s, &mut data)?;
                 Parameter::DataPointer(ptr)
@@ -306,7 +306,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             if let Parameter::ActionRef(ptr) = param {
                 let idx = usize::try_from(!*ptr)?;
                 let (name, addr) = pending_references.get_index(idx).context("wow this shouldn't happen2")?;
-                *ptr = addr.context(format!("never encountered this label {}", BStr::new(name)))?;
+                *ptr = addr.with_context(|| format!("never encountered this label {}", BStr::new(name)))?;
             }
         }
     }
