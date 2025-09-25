@@ -149,7 +149,7 @@ fn split(orig: &str) -> anyhow::Result<(Vec<&str>, Option<&str>)> {
                         if peek == '"' || peek == '\\' {
                             skip = 1;
                         } else if peek == 'x' {
-                            skip = 2;
+                            skip = 3;
                         } else {
                             bail!("unsupported escape: original line {orig}");
                         }
