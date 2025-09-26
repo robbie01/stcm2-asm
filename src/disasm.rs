@@ -134,7 +134,7 @@ fn label_to_string(label: &[u8]) -> Cow<'_, str> {
 // This could probably be more efficient using u32 ranges to represent chunks
 fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
     let mut chunks = Vec::new();
-    let mut current_labels = BTreeSet::new();
+    let mut current_labels = BTreeSet::new(); // More performant than HashSet
     let mut current_chunk = Vec::new();
 
     for (&addr, act) in acts {
