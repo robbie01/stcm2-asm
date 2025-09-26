@@ -145,15 +145,13 @@ fn split(orig: &str) -> anyhow::Result<(Vec<&str>, Option<&str>)> {
                     break;
                 }
 
-                if ch == '\\' {
-                    if let Some(peek) = instr[idx + ch.len_utf8()..].chars().next() {
-                        if peek == '"' || peek == '\\' {
-                            skip = 1;
-                        } else if peek == 'x' {
-                            skip = 3;
-                        } else {
-                            bail!("unsupported escape: original line {orig}");
-                        }
+                if ch == '\\' && let Some(peek) = instr[idx + ch.len_utf8()..].chars().next() {
+                    if peek == '"' || peek == '\\' {
+                        skip = 1;
+                    } else if peek == 'x' {
+                        skip = 3;
+                    } else {
+                        bail!("unsupported escape: original line {orig}");
                     }
                 }
             }
