@@ -1,6 +1,7 @@
 use std::{borrow::Cow, fs::{self, File}, io::{self, BufRead, BufReader}, mem, path::PathBuf, ptr, sync::LazyLock};
 
 use anyhow::{bail, ensure, Context as _};
+use bimap::BiMap;
 use bstr::BStr;
 use bytes::{BufMut, Bytes};
 use clap::Parser;
@@ -173,7 +174,7 @@ fn split(orig: &str) -> anyhow::Result<(Vec<&str>, Option<&str>)> {
     }
 }
 
-pub fn main(args: Args) -> anyhow::Result<()> {
+pub fn main(args: Args, mnemonics: BiMap<Cow<'_, str>, u32>) -> anyhow::Result<()> {
     static INITIAL_ADDRESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[0-9A-F]{6})? +").unwrap());
     static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^((?:[!-\[\]-~]|\\x[0-9a-f]{2})+): ").unwrap());
 
@@ -235,8 +236,8 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         let (call, opcode) = if let Some(op) = op.strip_prefix("raw ") {
             let opcode = u32::from_str_radix(op, 16)?;
             (false, opcode)
-        } else if op == "return" {
-            (false, 0)
+        } else if let Some(&opcode) = mnemonics.get_by_left(op) {
+            (false, opcode)
         } else if let Some(op) = op.strip_prefix("call ") {
             let op = decode_label(op);
             let ent = pending_references.entry(op);

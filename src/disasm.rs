@@ -1,5 +1,6 @@
-use std::{borrow::Cow, cmp::Ordering, collections::{BTreeMap, HashMap, HashSet}, fmt::Write as _, fs, mem, path::PathBuf, str, sync::LazyLock};
+use std::{borrow::Cow, cmp::Ordering, collections::{BTreeMap, BTreeSet, HashMap}, fmt::Write as _, fs, io::{self, BufWriter, Write as _}, mem, path::PathBuf, str, sync::LazyLock};
 use anyhow::{bail, ensure, Context as _};
+use bimap::BiMap;
 use bytes::{Buf as _, Bytes};
 use clap::Parser;
 use base64::{display::Base64Display, prelude::*};
@@ -133,7 +134,7 @@ fn label_to_string(label: &[u8]) -> Cow<'_, str> {
 // This could probably be more efficient using u32 ranges to represent chunks
 fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
     let mut chunks = Vec::new();
-    let mut current_labels = HashSet::new();
+    let mut current_labels = BTreeSet::new();
     let mut current_chunk = Vec::new();
 
     for (&addr, act) in acts {
@@ -181,7 +182,8 @@ fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
     chunks.into_iter().map(|z| z.1).collect()
 }
 
-pub fn main(args: Args) -> anyhow::Result<()> {
+pub fn main(args: Args, mnemonics: BiMap<Cow<'_, str>, u32>) -> anyhow::Result<()> {
+    let mut stdout = BufWriter::new(io::stdout().lock());
     let file = fs::read(args.file)?.into();
 
     let mut stcm2 = from_bytes(file)?;
@@ -225,34 +227,34 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     }
 
     let tag = str::from_utf8(&stcm2.tag).context("nooooo")?.trim_end_matches('\0');
-    println!(".tag \"{tag}\"");
-    println!(".global_data {}", Base64Display::new(&stcm2.global_data, &BASE64_STANDARD_NO_PAD));
-    println!(".code_start");
+    writeln!(stdout, ".tag \"{tag}\"")?;
+    writeln!(stdout, ".global_data {}", Base64Display::new(&stcm2.global_data, &BASE64_STANDARD_NO_PAD))?;
+    writeln!(stdout, ".code_start")?;
 
     let maxlabel = stcm2.actions.values().filter_map(|act| act.label(args.junk)).map(|l| l.len()).max().unwrap_or_default().max(14);
 
     for chunk in chunk_actions(&stcm2.actions) {
-        println!();
+        writeln!(stdout)?;
         for (addr, act) in chunk {
             if args.address {
-                print!("{addr:06X} ");
+                write!(stdout, "{addr:06X} ")?;
             }
 
             if let Some(label) = act.label(args.junk) {
                 let label = label_to_string(label);
-                print!("{label:>maxlabel$}: ");
+                write!(stdout, "{label:>maxlabel$}: ")?;
             } else {
-                print!("{:maxlabel$}  ", "");
+                write!(stdout, "{:maxlabel$}  ", "")?;
             }
 
             let Action { call, opcode, ref params, ref data, .. } = *act;
             
             if call {
-                print!("call {}", label_to_string(stcm2.actions.get(&opcode).context("bruh")?.label(args.junk).context("bruh2")?));
-            } else if opcode == 0 && params.is_empty() {
-                print!("return");
+                write!(stdout, "call {}", label_to_string(stcm2.actions.get(&opcode).context("bruh")?.label(args.junk).context("bruh2")?))?;
+            } else if let Some(name) = mnemonics.get_by_right(&opcode) {
+                write!(stdout, "{name}")?;
             } else {
-                print!("raw {opcode:X}");
+                write!(stdout, "raw {opcode:X}")?;
             }
 
             let mut data = data.clone();
@@ -289,51 +291,53 @@ pub fn main(args: Args) -> anyhow::Result<()> {
 
             for &param in params {
                 match param {
-                    Parameter::Value(v) => print!(", {v:X}"),
-                    Parameter::ActionRef(addr) => print!(", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label(args.junk).context("bruh6")?)),
+                    Parameter::Value(v) => write!(stdout, ", {v:X}")?,
+                    Parameter::ActionRef(addr) => write!(stdout, ", [{}]", label_to_string(stcm2.actions.get(&addr).context("bruh5")?.label(args.junk).context("bruh6")?))?,
                     Parameter::DataPointer(addr) => {
                         if let Some(s) = data_pos.get(&usize::try_from(addr)?) {
                             match *s {
                                 ref s@StringType::Type0U32(n) | ref s@StringType::Type1U32(n) => {
                                     let prefix = if s.type_() == 0 { "" } else { "@" };
                                     if n < 0x10000000 {
-                                        print!(", {prefix}={n}")
+                                        write!(stdout, ", {prefix}={n}")?;
                                     } else {
-                                        print!(", {prefix}={n:X}h");
+                                        write!(stdout, ", {prefix}={n:X}h")?;
                                     }
                                 },
                                 StringType::String(ref s) => {
                                     let s   = decode_with_hex_replacement(args.encoding.get(), s);
-                                    print!(", \"");
+                                    write!(stdout, ", \"")?;
                                     for ch in s.chars() {
                                         if ch.is_control() {
-                                            print!(r"\x{:02x}", u32::from(ch));
+                                            write!(stdout, r"\x{:02x}", u32::from(ch))?;
                                         } else if ch == '\u{1f5ff}' {
-                                            print!(r"\");
+                                            write!(stdout, r"\")?;
                                         } else if ch == '"' || ch == '\\' {
-                                            print!(r"\{ch}");
+                                            write!(stdout, r"\{ch}")?;
                                         } else {
-                                            print!("{ch}");
+                                            write!(stdout, "{ch}")?;
                                         }
                                     }   
-                                    print!("\"");
+                                    write!(stdout, "\"")?;
                                 }
                             }
                         } else {
                             bail!("param references non-string");
                         }
                     },
-                    Parameter::GlobalDataPointer(addr) => print!(", [global_data+{addr}]")
+                    Parameter::GlobalDataPointer(addr) => write!(stdout, ", [global_data+{addr}]")?
                 }
             }
 
             if args.junk && !junk.is_empty() {
-                print!(" ! {}", Base64Display::new(&junk[..], &BASE64_STANDARD_NO_PAD));
+                write!(stdout, " ! {}", Base64Display::new(&junk[..], &BASE64_STANDARD_NO_PAD))?;
             }
 
-            println!();
+            writeln!(stdout)?;
         }
     }
+
+    stdout.flush()?;
 
     Ok(())
 }
