@@ -182,7 +182,7 @@ fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
     chunks.into_iter().map(|z| z.1).collect()
 }
 
-pub fn main(args: Args, mnemonics: BiMap<Cow<'_, str>, u32>) -> anyhow::Result<()> {
+pub fn main(args: Args, mnemonics: BiMap<&str, u32>) -> anyhow::Result<()> {
     let mut stdout = BufWriter::new(io::stdout().lock());
     let file = fs::read(args.file)?.into();
 

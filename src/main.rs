@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fs, iter, path::PathBuf};
+use std::{fs, iter, path::PathBuf};
 
 use anyhow::{ensure, Context};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -60,11 +60,11 @@ fn main() -> anyhow::Result<()> {
                 let name = k.as_str().with_context(|| format!("mnemonic {k:?} is not a str"))?;
                 let opcode = v.as_integer().with_context(|| format!("opcode {v:?} is not an int"))?;
                 let opcode = opcode.try_into().with_context(|| format!("opcode {opcode:X} out of range"))?;
-                Ok((Cow::Borrowed(name), opcode))
+                Ok((name, opcode))
             })
             .collect::<anyhow::Result<_>>()?
     } else {
-        iter::once(("return".into(), 0u32)).collect()
+        iter::once(("return", 0u32)).collect()
     };
 
     match args.cmd {

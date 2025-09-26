@@ -174,7 +174,7 @@ fn split(orig: &str) -> anyhow::Result<(Vec<&str>, Option<&str>)> {
     }
 }
 
-pub fn main(args: Args, mnemonics: BiMap<Cow<'_, str>, u32>) -> anyhow::Result<()> {
+pub fn main(args: Args, mnemonics: BiMap<&str, u32>) -> anyhow::Result<()> {
     static INITIAL_ADDRESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[0-9A-F]{6})? +").unwrap());
     static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^((?:[!-\[\]-~]|\\x[0-9a-f]{2})+): ").unwrap());
 
