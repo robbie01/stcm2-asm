@@ -1,5 +1,8 @@
 # Mnemonics extracted from Cendrillon palikA (Switch, Japan)
 
+# Don't be fooled. The actual game uses like 6 of these.
+# It mostly uses opcodes that don't have a name (yet).
+
 mnemonics:
   #Return: 0
   return: 0  # I like the lowercase more lol
