@@ -164,12 +164,10 @@ fn chunk_actions(acts: &BTreeMap<u32, Action>) -> Vec<Vec<(u32, &Action)>> {
         'outer: loop {
             for (i, (h, _)) in chunks.iter().enumerate().skip(cur+1).rev() {
                 if !chunks[cur].0.is_disjoint(h) {
-                    let (mut h0, mut v0) = mem::take(&mut chunks[cur]);
-                    for (h, v) in chunks.drain(cur+1..=i) {
-                        h0.extend(h);
-                        v0.extend(v);
-                    }
-                    chunks[cur] = (h0, v0);
+                    let nh = chunks[cur..=i].iter().flat_map(|(h, _)| h.iter().copied()).collect();
+                    let nv = chunks[cur..=i].iter().flat_map(|(_, v)| v.iter().copied()).collect();
+                    chunks.drain(cur+1..=i);
+                    chunks[cur] = (nh, nv);
                     continue 'outer;
                 }
             }
