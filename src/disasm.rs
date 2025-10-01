@@ -271,7 +271,7 @@ pub fn main(args: Args, mnemonics: BiMap<&str, u32>) -> anyhow::Result<()> {
                     }
                     at_beginning = false;
 
-                    let abs_pos = pos + usize::try_from(unsafe { data.as_ptr().offset_from(act.data.as_ptr()) })?;
+                    let abs_pos = pos + ((data.as_ptr() as usize) - (act.data.as_ptr() as usize));
                     data_pos.insert(abs_pos, s);
 
                     data = tail;

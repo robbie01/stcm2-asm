@@ -26,7 +26,7 @@ fn decode_label(label: &str) -> Cow<'_, [u8]> {
     static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\x([0-9a-f]{2})").unwrap());
     PLACEHOLDER.replace_all(label.as_bytes(), |capt: &Captures<'_>| {
         [u8::from_str_radix(
-            unsafe { str::from_utf8_unchecked(capt.get(1).unwrap().as_bytes()) },
+            str::from_utf8(capt.get(1).unwrap().as_bytes()).unwrap(),
             16
         ).unwrap()]
     })
