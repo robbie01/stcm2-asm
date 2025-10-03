@@ -36,7 +36,36 @@ impl StringType {
     }
 }
 
-fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(StringType, Bytes)> {
+// Technically a 2-3 byte heuristic
+fn four_byte_heuristic(encoding: &'static encoding_rs::Encoding, mut v: Bytes) -> StringType {
+    assert_eq!(v.len(), 4);
+
+    let n = v[..].try_into().map(u32::from_le_bytes).unwrap();
+
+    if n > 0xFFFFFF {
+        return StringType::Type0U32(n)
+    }
+
+    let nzero = v.iter().rev().take_while(|&&n| n == 0).count();
+
+    if nzero > 2 {
+        return StringType::Type0U32(n)
+    }
+
+    v.truncate(v.len() - nzero);
+
+    let Some(s) = encoding.decode_without_bom_handling_and_without_replacement(&v) else {
+        return StringType::Type0U32(n)
+    };
+
+    if s.chars().any(char::is_control) {
+        return StringType::Type0U32(n)
+    }
+
+    StringType::String(v)
+}
+
+fn decode_string(encoding: &'static encoding_rs::Encoding, addr: u32, mut str: Bytes) -> anyhow::Result<(StringType, Bytes)> {
     str.advance(addr as usize);
 
     ensure!(str.len() > 16, "not enough room for magic");
@@ -53,16 +82,12 @@ fn decode_string(addr: u32, mut str: Bytes) -> anyhow::Result<(StringType, Bytes
 
     let tail = str.split_off(len);
 
-    // hack to output u32s (i should really change the API here)
-    // do you like my heuristic? :) it seems like the game only uses ints that aren't 6-digit hex
-    if let Ok(n) = str[..].try_into().map(u32::from_le_bytes)
-        && (type_ == 1 || !matches!(n, 0x100000..0x1000000 | 28783))
-    {
-        return Ok((match type_ {
-            0 => StringType::Type0U32(n),
-            1 => StringType::Type1U32(n),
-            _ => unreachable!()
-        }, tail))
+    if type_ == 1 && let Ok(n) = str[..].try_into().map(u32::from_le_bytes) {
+        return Ok((StringType::Type1U32(n), tail))
+    }
+
+    if str.len() == 4 {
+        return Ok((four_byte_heuristic(encoding, str), tail))
     }
 
     ensure!(type_ == 0, "string type is 1, but is not a u32");
@@ -264,7 +289,7 @@ pub fn main(args: Args, mnemonics: BiMap<&str, u32>) -> anyhow::Result<()> {
             let mut data_pos = HashMap::new();
 
             while pos < data.len() {
-                if let Ok((s, tail)) = decode_string(pos.try_into()?, data.clone()) {
+                if let Ok((s, tail)) = decode_string(args.encoding.get(), pos.try_into()?, data.clone()) {
                     if pos != 0 {
                         ensure!(at_beginning, "junk found after beginning");
                         junk = data.slice(..pos);
