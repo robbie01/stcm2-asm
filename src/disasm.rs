@@ -48,11 +48,11 @@ fn four_byte_heuristic(encoding: &'static encoding_rs::Encoding, mut v: Bytes) -
 
     let nzero = v.iter().rev().take_while(|&&n| n == 0).count();
 
-    if nzero > 2 {
+    v.truncate(v.len() - nzero);
+
+    if v.len() < 3 || v[..] == *b"op" {
         return StringType::Type0U32(n)
     }
-
-    v.truncate(v.len() - nzero);
 
     let Some(s) = encoding.decode_without_bom_handling_and_without_replacement(&v) else {
         return StringType::Type0U32(n)
