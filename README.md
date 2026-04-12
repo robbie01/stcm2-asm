@@ -9,3 +9,7 @@ Files in `asms` and `reasms` are ad-hoc scripts for my own use; I put them here 
 - AMNESIA World (Switch, Japan)
 - Cendrillon palikA (Switch, Japan)
 - ColLar × MalicE (Switch, USA)
+
+----
+
+[*Psst...*](https://github.com/Brolijah/YACpkTool)
